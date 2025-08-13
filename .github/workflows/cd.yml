@@ -98,7 +98,7 @@ jobs:
       
       # Setup kubectl để deploy lên Kubernetes (nếu dùng K8s)
       - name: Setup kubectl
-        uses: azure/setup-kubectl@v3
+        uses: azure/setup-kubectl@v4
         with:
           version: 'v1.28.0'
       
