@@ -1,0 +1,425 @@
+{
+  "info": {
+    "name": "Volcanion Hermes API",
+    "description": "Ebook Management System API",
+    "version": "1.0.0",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{jwt_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080/api/v1",
+      "type": "string"
+    },
+    {
+      "key": "jwt_token",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "Register",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"admin\",\n  \"email\": \"admin@example.com\",\n  \"password\": \"password123\",\n  \"roles\": [\"admin\"]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "Login",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"admin\",\n  \"password\": \"password123\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "login"]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "    const response = pm.response.json();",
+                  "    pm.collectionVariables.set('jwt_token', response.data.token);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get Profile",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/profile",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "profile"]
+            }
+          }
+        },
+        {
+          "name": "Refresh Token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/refresh",
+              "host": ["{{base_url}}"],
+              "path": ["auth", "refresh"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Ebooks",
+      "item": [
+        {
+          "name": "Create Ebook",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Learning Golang\",\n  \"author\": \"John Doe\",\n  \"publisher\": \"Tech Publications\",\n  \"publish_year\": 2023,\n  \"isbn\": \"978-1234567890\",\n  \"description\": \"A comprehensive guide to learning Go programming language\",\n  \"language\": \"English\",\n  \"category\": \"Programming\",\n  \"tags\": [\"golang\", \"programming\", \"backend\", \"tutorial\"]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/ebooks",
+              "host": ["{{base_url}}"],
+              "path": ["ebooks"]
+            }
+          }
+        },
+        {
+          "name": "Get All Ebooks",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/ebooks?page=1&limit=10",
+              "host": ["{{base_url}}"],
+              "path": ["ebooks"],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Ebook by ID",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/ebooks/:id",
+              "host": ["{{base_url}}"],
+              "path": ["ebooks", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "ebook_id_here"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update Ebook",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Advanced Golang Programming\",\n  \"description\": \"An updated comprehensive guide to advanced Go programming\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/ebooks/:id",
+              "host": ["{{base_url}}"],
+              "path": ["ebooks", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "ebook_id_here"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Delete Ebook",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/ebooks/:id",
+              "host": ["{{base_url}}"],
+              "path": ["ebooks", ":id"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "ebook_id_here"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Search Ebooks",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/ebooks/search?q=golang&page=1&limit=5",
+              "host": ["{{base_url}}"],
+              "path": ["ebooks", "search"],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "golang"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "5"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Filter by Category",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/ebooks?category=Programming&page=1&limit=10",
+              "host": ["{{base_url}}"],
+              "path": ["ebooks"],
+              "query": [
+                {
+                  "key": "category",
+                  "value": "Programming"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Filter by Author",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/ebooks?author=John&page=1&limit=10",
+              "host": ["{{base_url}}"],
+              "path": ["ebooks"],
+              "query": [
+                {
+                  "key": "author",
+                  "value": "John"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Upload Ebook File",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": []
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/ebooks/:id/upload",
+              "host": ["{{base_url}}"],
+              "path": ["ebooks", ":id", "upload"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "ebook_id_here"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Upload Cover Image",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "cover",
+                  "type": "file",
+                  "src": []
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{base_url}}/ebooks/:id/cover",
+              "host": ["{{base_url}}"],
+              "path": ["ebooks", ":id", "cover"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "ebook_id_here"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Download Ebook",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/ebooks/:id/download",
+              "host": ["{{base_url}}"],
+              "path": ["ebooks", ":id", "download"],
+              "variable": [
+                {
+                  "key": "id",
+                  "value": "ebook_id_here"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Health Check",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "http://localhost:8080/health",
+          "protocol": "http",
+          "host": ["localhost"],
+          "port": "8080",
+          "path": ["health"]
+        }
+      }
+    }
+  ]
+}

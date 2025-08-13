@@ -1,0 +1,324 @@
+# Security Workflow - Kiểm tra bảo mật định kỳ và khi có thay đổi code
+name: Security Scan
+
+# Trigger hàng tuần và khi có thay đổi security-related files
+on:
+  schedule:
+    # Chạy hàng tuần vào Chủ nhật lúc 2:00 AM UTC
+    - cron: '0 2 * * 0'
+  push:
+    branches: [master, main, staging, develop]
+    paths:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Dockerfile'
+      - '.github/workflows/**'
+  pull_request:
+    branches: [master, main, staging, develop]
+    paths:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Dockerfile'
+
+jobs:
+  # Job 1: Static security analysis với gosec
+  gosec-scan:
+    name: Gosec Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+      
+      - name: Download dependencies
+        run: go mod download
+      
+      - name: Run Gosec Security Scanner
+        run: |
+          # Install gosec
+          go install github.com/securecodewarrior/gosec/v2/cmd/gosec@latest
+          
+          # Run gosec and generate SARIF output
+          $(go env GOPATH)/bin/gosec -fmt sarif -out gosec-results.sarif ./...
+      
+      - name: Upload SARIF file
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: gosec-results.sarif
+      
+      - name: Parse Gosec results
+        run: |
+          if [ -f gosec-results.sarif ]; then
+            echo "🔍 Gosec scan completed"
+            
+            # Count issues by severity
+            HIGH_ISSUES=$(jq '.runs[0].results | map(select(.level == "error")) | length' gosec-results.sarif || echo "0")
+            MEDIUM_ISSUES=$(jq '.runs[0].results | map(select(.level == "warning")) | length' gosec-results.sarif || echo "0")
+            LOW_ISSUES=$(jq '.runs[0].results | map(select(.level == "note")) | length' gosec-results.sarif || echo "0")
+            
+            echo "📊 Security Issues Found:"
+            echo "  🔴 High: $HIGH_ISSUES"
+            echo "  🟡 Medium: $MEDIUM_ISSUES"
+            echo "  🔵 Low: $LOW_ISSUES"
+            
+            if [ "$HIGH_ISSUES" -gt 0 ]; then
+              echo "❌ High severity security issues found! Please review and fix."
+              exit 1
+            elif [ "$MEDIUM_ISSUES" -gt 5 ]; then
+              echo "⚠️ Multiple medium severity issues found. Consider addressing them."
+            fi
+          fi
+
+  # Job 2: Dependency vulnerability scan
+  dependency-scan:
+    name: Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+      
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      
+      - name: Run vulnerability check
+        run: |
+          echo "🔍 Checking for known vulnerabilities in dependencies..."
+          
+          if govulncheck ./...; then
+            echo "✅ No known vulnerabilities found in dependencies"
+          else
+            echo "❌ Vulnerabilities found in dependencies!"
+            echo "Please update vulnerable dependencies or review the findings."
+            exit 1
+          fi
+      
+      - name: Check for outdated dependencies
+        run: |
+          echo "📦 Checking for outdated dependencies..."
+          
+          # List direct dependencies
+          go list -m -u all | grep '\[' || {
+            echo "✅ All dependencies are up to date"
+            exit 0
+          }
+          
+          echo "⚠️ Some dependencies have updates available"
+          echo "Consider updating to get security fixes and improvements"
+
+  # Job 3: Secret scanning
+  secret-scan:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Install TruffleHog
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh | sh -s -- -b /usr/local/bin
+      
+      - name: Run TruffleHog scan
+        run: |
+          echo "🔍 Scanning for secrets in git history..."
+          
+          # Scan git history for secrets
+          if trufflehog git file://. --since-commit=$(git log --oneline -n 50 | tail -1 | cut -d' ' -f1) --fail; then
+            echo "✅ No secrets found in recent commits"
+          else
+            echo "❌ Potential secrets found!"
+            echo "Please review the findings and remove any exposed secrets"
+            echo "Consider using git-filter-repo to remove secrets from history"
+            exit 1
+          fi
+      
+      - name: Check for common secret patterns
+        run: |
+          echo "🔍 Checking for common secret patterns..."
+          
+          # Pattern-based secret detection
+          SECRET_PATTERNS=(
+            "password\s*=\s*['\"][^'\"]{8,}"
+            "secret\s*=\s*['\"][^'\"]{16,}"
+            "key\s*=\s*['\"][^'\"]{16,}"
+            "token\s*=\s*['\"][^'\"]{20,}"
+            "api[_-]?key\s*=\s*['\"][^'\"]{16,}"
+            "private[_-]?key"
+            "-----BEGIN (RSA |DSA )?PRIVATE KEY-----"
+          )
+          
+          FOUND_SECRETS=0
+          for pattern in "${SECRET_PATTERNS[@]}"; do
+            if grep -r -i -E "$pattern" --include="*.go" --include="*.yml" --include="*.yaml" --include="*.json" . | grep -v "_test.go"; then
+              FOUND_SECRETS=1
+            fi
+          done
+          
+          if [ $FOUND_SECRETS -eq 1 ]; then
+            echo "❌ Potential secrets found in code!"
+            echo "Please review and remove any hardcoded secrets"
+            exit 1
+          else
+            echo "✅ No obvious secret patterns found"
+          fi
+
+  # Job 4: Docker security scan
+  docker-security:
+    name: Docker Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Build Docker image
+        run: |
+          docker build -t volcanion-hermes:security-scan .
+      
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'volcanion-hermes:security-scan'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+      
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+      
+      - name: Check Dockerfile best practices
+        run: |
+          echo "🔍 Checking Dockerfile security best practices..."
+          
+          # Install hadolint
+          wget -O hadolint https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64
+          chmod +x hadolint
+          
+          # Run hadolint
+          if ./hadolint Dockerfile; then
+            echo "✅ Dockerfile follows security best practices"
+          else
+            echo "⚠️ Dockerfile has some issues to address"
+          fi
+
+  # Job 5: Infrastructure security
+  infrastructure-security:
+    name: Infrastructure Security Check
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Check for infrastructure security issues
+        run: |
+          echo "🔍 Checking infrastructure configuration..."
+          
+          # Check Docker Compose security
+          if [ -f docker-compose.yml ]; then
+            echo "📋 Checking Docker Compose configuration..."
+            
+            # Check for exposed ports
+            if grep -q "0.0.0.0:" docker-compose.yml; then
+              echo "⚠️ Services are exposed on all interfaces (0.0.0.0)"
+              echo "Consider restricting to localhost (127.0.0.1) if not needed"
+            fi
+            
+            # Check for default passwords
+            if grep -i -E "(password|pass|pwd).*=.*(admin|password|123|default)" docker-compose.yml; then
+              echo "❌ Default passwords found in Docker Compose!"
+              exit 1
+            fi
+          fi
+          
+          # Check Kubernetes manifests if they exist
+          if find . -name "*.yaml" -o -name "*.yml" | grep -v docker-compose | grep -v .github | head -1; then
+            echo "📋 Checking Kubernetes manifests..."
+            
+            # Check for security contexts
+            if ! grep -r "securityContext" --include="*.yaml" --include="*.yml" .; then
+              echo "⚠️ No securityContext found in Kubernetes manifests"
+              echo "Consider adding security contexts for better pod security"
+            fi
+          fi
+          
+          echo "✅ Infrastructure security check completed"
+
+  # Job 6: Security report summary
+  security-summary:
+    name: Security Summary
+    runs-on: ubuntu-latest
+    needs: [gosec-scan, dependency-scan, secret-scan, docker-security, infrastructure-security]
+    if: always()
+    
+    steps:
+      - name: Generate security report
+        run: |
+          echo "🛡️ Security Scan Summary"
+          echo "======================="
+          echo ""
+          echo "📊 Scan Results:"
+          echo "  🔍 Static Analysis (Gosec): ${{ needs.gosec-scan.result }}"
+          echo "  📦 Dependency Scan: ${{ needs.dependency-scan.result }}"
+          echo "  🔐 Secret Scan: ${{ needs.secret-scan.result }}"
+          echo "  🐳 Docker Security: ${{ needs.docker-security.result }}"
+          echo "  🏗️ Infrastructure: ${{ needs.infrastructure-security.result }}"
+          echo ""
+          
+          # Count passed vs failed
+          PASSED=0
+          FAILED=0
+          
+          for result in "${{ needs.gosec-scan.result }}" "${{ needs.dependency-scan.result }}" "${{ needs.secret-scan.result }}" "${{ needs.docker-security.result }}" "${{ needs.infrastructure-security.result }}"; do
+            if [ "$result" = "success" ]; then
+              PASSED=$((PASSED + 1))
+            else
+              FAILED=$((FAILED + 1))
+            fi
+          done
+          
+          echo "📈 Summary: $PASSED passed, $FAILED failed"
+          echo ""
+          
+          if [ $FAILED -gt 0 ]; then
+            echo "❌ Security issues found! Please review the scan results above."
+            echo "🔗 Check the Actions tab for detailed reports."
+            exit 1
+          else
+            echo "✅ All security scans passed!"
+            echo "🎉 No security issues detected."
+          fi
+      
+      - name: Create security badge
+        if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+        run: |
+          # Generate security status badge data
+          if [ "${{ needs.gosec-scan.result }}" = "success" ] && \
+             [ "${{ needs.dependency-scan.result }}" = "success" ] && \
+             [ "${{ needs.secret-scan.result }}" = "success" ] && \
+             [ "${{ needs.docker-security.result }}" = "success" ] && \
+             [ "${{ needs.infrastructure-security.result }}" = "success" ]; then
+            echo "SECURITY_STATUS=passing" >> $GITHUB_ENV
+            echo "SECURITY_COLOR=brightgreen" >> $GITHUB_ENV
+          else
+            echo "SECURITY_STATUS=failing" >> $GITHUB_ENV
+            echo "SECURITY_COLOR=red" >> $GITHUB_ENV
+          fi
+          
+          echo "🏷️ Security status: $SECURITY_STATUS"

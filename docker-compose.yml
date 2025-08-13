@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  # Application
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017
+      - MINIO_ENDPOINT=minio:9000
+    depends_on:
+      - mongodb
+      - minio
+    volumes:
+      - ./.env:/root/.env
+    networks:
+      - volcanion-network
+
+  # MongoDB
+  mongodb:
+    image: mongo:6.0
+    container_name: volcanion-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_DATABASE=volcanion_ebook
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - volcanion-network
+
+  # MinIO
+  minio:
+    image: minio/minio:latest
+    container_name: volcanion-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - volcanion-network
+
+  # MongoDB Express (Optional - for database management)
+  mongo-express:
+    image: mongo-express:latest
+    container_name: volcanion-mongo-express
+    ports:
+      - "8081:8081"
+    environment:
+      - ME_CONFIG_MONGODB_SERVER=mongodb
+      - ME_CONFIG_MONGODB_PORT=27017
+      - ME_CONFIG_BASICAUTH_USERNAME=admin
+      - ME_CONFIG_BASICAUTH_PASSWORD=admin123
+    depends_on:
+      - mongodb
+    networks:
+      - volcanion-network
+
+volumes:
+  mongodb_data:
+  minio_data:
+
+networks:
+  volcanion-network:
+    driver: bridge

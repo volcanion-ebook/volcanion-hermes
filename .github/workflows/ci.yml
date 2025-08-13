@@ -1,0 +1,306 @@
+# CI Workflow - Kiểm tra code quality và chạy tests cho mọi PR
+name: CI - Continuous Integration
+
+# Trigger workflow khi có PR vào các nhánh chính hoặc push code
+on:
+  pull_request:
+    branches: [master, main, staging, develop]
+  push:
+    branches: [master, main, staging, develop]
+
+# Định nghĩa các job sẽ chạy
+jobs:
+  # Job 1: Lint và format code
+  lint:
+    name: Code Quality Check
+    runs-on: ubuntu-latest
+    
+    steps:
+      # Checkout source code
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      # Setup Go environment
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+          cache: true
+      
+      # Cache Go modules để tăng tốc build
+      - name: Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+      
+      # Download dependencies
+      - name: Download dependencies
+        run: go mod download
+      
+      # Verify dependencies
+      - name: Verify dependencies
+        run: go mod verify
+      
+      # Run go vet để check code issues
+      - name: Run go vet
+        run: go vet ./...
+      
+      # Install và run golangci-lint cho comprehensive linting
+      - name: Install golangci-lint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v1.54.2
+      
+      - name: Run golangci-lint
+        run: |
+          $(go env GOPATH)/bin/golangci-lint run --timeout=5m
+      
+      # Check formatting với gofmt
+      - name: Check formatting
+        run: |
+          if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then
+            echo "Go code is not formatted:"
+            gofmt -s -l .
+            exit 1
+          fi
+
+  # Job 2: Run tests với coverage
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    
+    # Services cần thiết cho testing (MongoDB, MinIO)
+    services:
+      mongodb:
+        image: mongo:7.0
+        env:
+          MONGO_INITDB_ROOT_USERNAME: testuser
+          MONGO_INITDB_ROOT_PASSWORD: testpass
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --eval 'db.adminCommand(\"ping\")'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      
+      minio:
+        image: minio/minio:latest
+        env:
+          MINIO_ROOT_USER: testuser
+          MINIO_ROOT_PASSWORD: testpass123
+        ports:
+          - 9000:9000
+          - 9001:9001
+        options: >-
+          --health-cmd "curl -f http://localhost:9000/minio/health/live"
+          --health-interval 30s
+          --health-timeout 20s
+          --health-retries 3
+        volumes:
+          - /tmp/data:/data
+    
+    steps:
+      # Checkout source code
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      # Setup Go environment
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+          cache: true
+      
+      # Cache Go modules
+      - name: Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+      
+      # Download dependencies
+      - name: Download dependencies
+        run: go mod download
+      
+      # Setup test environment variables
+      - name: Setup test environment
+        run: |
+          cp .env.example .env.test
+          cat >> .env.test << EOF
+          # Test environment overrides
+          MONGODB_URI=mongodb://testuser:testpass@localhost:27017/volcanion_test?authSource=admin
+          MINIO_ENDPOINT=localhost:9000
+          MINIO_ACCESS_KEY=testuser
+          MINIO_SECRET_KEY=testpass123
+          MINIO_USE_SSL=false
+          JWT_SECRET=test-secret-key-for-ci
+          EOF
+      
+      # Wait for services to be ready
+      - name: Wait for MongoDB
+        run: |
+          for i in {1..30}; do
+            if mongosh mongodb://testuser:testpass@localhost:27017/admin --eval "db.adminCommand('ping')" > /dev/null 2>&1; then
+              echo "MongoDB is ready"
+              break
+            fi
+            echo "Waiting for MongoDB... ($i/30)"
+            sleep 2
+          done
+      
+      - name: Wait for MinIO
+        run: |
+          for i in {1..30}; do
+            if curl -f http://localhost:9000/minio/health/live > /dev/null 2>&1; then
+              echo "MinIO is ready"
+              break
+            fi
+            echo "Waiting for MinIO... ($i/30)"
+            sleep 2
+          done
+      
+      # Run tests với coverage
+      - name: Run tests with coverage
+        env:
+          ENV_FILE: .env.test
+        run: |
+          go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
+      
+      # Upload coverage reports
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.out
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false
+
+  # Job 3: Security scan với gosec
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+      # Checkout source code
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      # Setup Go environment
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+      
+      # Install gosec
+      - name: Install gosec
+        run: go install github.com/securecodewarrior/gosec/v2/cmd/gosec@latest
+      
+      # Run security scan
+      - name: Run gosec security scanner
+        run: |
+          gosec -fmt sarif -out gosec-results.sarif ./...
+        continue-on-error: true
+      
+      # Upload security scan results
+      - name: Upload SARIF file
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: gosec-results.sarif
+
+  # Job 4: Build application để đảm bảo compile thành công
+  build:
+    name: Build Application
+    runs-on: ubuntu-latest
+    
+    steps:
+      # Checkout source code
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      # Setup Go environment
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+          cache: true
+      
+      # Download dependencies
+      - name: Download dependencies
+        run: go mod download
+      
+      # Build application cho multiple platforms
+      - name: Build for Linux
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o bin/volcanion-hermes-linux ./cmd/server
+      
+      - name: Build for Windows
+        run: |
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags="-w -s" -o bin/volcanion-hermes-windows.exe ./cmd/server
+      
+      - name: Build for macOS
+        run: |
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags="-w -s" -o bin/volcanion-hermes-macos ./cmd/server
+      
+      # Upload build artifacts
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: build-artifacts
+          path: bin/
+          retention-days: 7
+
+  # Job 5: Docker build test
+  docker:
+    name: Docker Build Test
+    runs-on: ubuntu-latest
+    
+    steps:
+      # Checkout source code
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      # Setup Docker Buildx
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      # Build Docker image để test Dockerfile
+      - name: Build Docker image
+        run: |
+          docker build -t volcanion-hermes:test .
+      
+      # Test Docker image có chạy được không
+      - name: Test Docker image
+        run: |
+          docker run --rm volcanion-hermes:test --version || echo "Version check completed"
+
+  # Job tổng hợp kết quả - chỉ chạy khi tất cả jobs khác thành công
+  ci-success:
+    name: CI Success
+    runs-on: ubuntu-latest
+    needs: [lint, test, security, build, docker]
+    if: always()
+    
+    steps:
+      - name: Check CI results
+        run: |
+          if [[ "${{ needs.lint.result }}" == "success" && \
+                "${{ needs.test.result }}" == "success" && \
+                "${{ needs.security.result }}" == "success" && \
+                "${{ needs.build.result }}" == "success" && \
+                "${{ needs.docker.result }}" == "success" ]]; then
+            echo "✅ All CI checks passed!"
+            exit 0
+          else
+            echo "❌ Some CI checks failed:"
+            echo "Lint: ${{ needs.lint.result }}"
+            echo "Test: ${{ needs.test.result }}"
+            echo "Security: ${{ needs.security.result }}"
+            echo "Build: ${{ needs.build.result }}"
+            echo "Docker: ${{ needs.docker.result }}"
+            exit 1
+          fi

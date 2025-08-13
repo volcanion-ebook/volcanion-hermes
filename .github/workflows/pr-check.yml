@@ -1,0 +1,320 @@
+# PR Workflow - Kiểm tra chi tiết cho Pull Requests
+name: PR Check
+
+# Trigger khi có PR được tạo, update, hoặc synchronized
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [master, main, staging, develop]
+
+# Cancel previous runs của cùng PR để tránh waste resources
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Job 1: PR validation và metadata check
+  pr-validation:
+    name: PR Validation
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      # Validate PR title format
+      - name: Validate PR title
+        run: |
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          
+          # Check if title follows conventional commits format
+          if [[ ! "$PR_TITLE" =~ ^(feat|fix|docs|style|refactor|perf|test|chore)(\(.+\))?: .+ ]]; then
+            echo "❌ PR title must follow conventional commits format:"
+            echo "   feat: add new feature"
+            echo "   fix: fix bug"
+            echo "   docs: update documentation"
+            echo "   style: formatting changes"
+            echo "   refactor: code refactoring"
+            echo "   perf: performance improvements"
+            echo "   test: add tests"
+            echo "   chore: maintenance tasks"
+            echo ""
+            echo "Current title: $PR_TITLE"
+            exit 1
+          fi
+          
+          echo "✅ PR title format is valid"
+      
+      # Check if PR has description
+      - name: Check PR description
+        run: |
+          if [[ -z "${{ github.event.pull_request.body }}" ]]; then
+            echo "❌ PR must have a description"
+            exit 1
+          fi
+          
+          echo "✅ PR has description"
+      
+      # Check if PR is not too large
+      - name: Check PR size
+        run: |
+          CHANGED_FILES=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files" | \
+            jq '. | length')
+          
+          if [[ $CHANGED_FILES -gt 50 ]]; then
+            echo "⚠️ WARNING: PR has $CHANGED_FILES files changed. Consider splitting into smaller PRs."
+          else
+            echo "✅ PR size is reasonable ($CHANGED_FILES files changed)"
+          fi
+
+  # Job 2: Code analysis và suggestions
+  code-analysis:
+    name: Code Analysis
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+      
+      # Analyze code complexity
+      - name: Check code complexity
+        run: |
+          go install github.com/fzipp/gocyclo/cmd/gocyclo@latest
+          
+          echo "🔍 Checking cyclomatic complexity..."
+          COMPLEX_FUNCS=$(gocyclo -over 15 . | head -10)
+          
+          if [[ -n "$COMPLEX_FUNCS" ]]; then
+            echo "⚠️ Functions with high complexity (>15):"
+            echo "$COMPLEX_FUNCS"
+            echo ""
+            echo "Consider refactoring these functions to reduce complexity."
+          else
+            echo "✅ No overly complex functions found"
+          fi
+      
+      # Check for TODO/FIXME comments
+      - name: Check for TODO/FIXME
+        run: |
+          echo "🔍 Checking for TODO/FIXME comments..."
+          
+          TODOS=$(grep -r -n "TODO\|FIXME\|XXX\|HACK" --include="*.go" . || true)
+          
+          if [[ -n "$TODOS" ]]; then
+            echo "📝 Found TODO/FIXME comments:"
+            echo "$TODOS"
+            echo ""
+            echo "💡 Consider creating issues for these items."
+          else
+            echo "✅ No TODO/FIXME comments found"
+          fi
+      
+      # Check for potential security issues
+      - name: Basic security check
+        run: |
+          echo "🔒 Checking for potential security issues..."
+          
+          # Check for hardcoded secrets patterns
+          SECRET_PATTERNS=$(grep -r -n -i "password\s*=\|secret\s*=\|key\s*=\|token\s*=" --include="*.go" . | grep -v "_test.go" || true)
+          
+          if [[ -n "$SECRET_PATTERNS" ]]; then
+            echo "⚠️ Potential hardcoded secrets found:"
+            echo "$SECRET_PATTERNS"
+            echo ""
+            echo "🛡️ Please ensure no secrets are hardcoded in the code."
+          else
+            echo "✅ No obvious hardcoded secrets found"
+          fi
+
+  # Job 3: Dependency check
+  dependency-check:
+    name: Dependency Check
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+      
+      # Check for dependency changes
+      - name: Check dependency changes
+        run: |
+          if git diff --name-only origin/${{ github.base_ref }}..HEAD | grep -q "go.mod\|go.sum"; then
+            echo "📦 Dependencies have been modified"
+            
+            echo "🔍 Dependency changes:"
+            git diff origin/${{ github.base_ref }}..HEAD go.mod || true
+            
+            echo ""
+            echo "🔍 Running dependency vulnerability check..."
+            go install golang.org/x/vuln/cmd/govulncheck@latest
+            govulncheck ./... || echo "⚠️ Vulnerability check completed with warnings"
+            
+          else
+            echo "✅ No dependency changes detected"
+          fi
+      
+      # Check for unused dependencies
+      - name: Check unused dependencies
+        run: |
+          go install github.com/client9/misspell/cmd/misspell@latest
+          go mod tidy
+          
+          if ! git diff --exit-code go.mod go.sum; then
+            echo "⚠️ Dependencies need to be tidied:"
+            echo "Run 'go mod tidy' to fix this."
+            exit 1
+          else
+            echo "✅ Dependencies are properly organized"
+          fi
+
+  # Job 4: Performance impact analysis
+  performance-check:
+    name: Performance Check
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft == false
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.21'
+      
+      # Run benchmarks nếu có
+      - name: Run benchmarks
+        run: |
+          echo "⚡ Running performance benchmarks..."
+          
+          if find . -name "*_test.go" -exec grep -l "func Benchmark" {} \; | head -1; then
+            echo "🏃 Found benchmark tests, running..."
+            go test -bench=. -benchmem ./... | tee benchmark-results.txt
+            
+            # Basic performance analysis
+            if grep -q "ns/op" benchmark-results.txt; then
+              echo "📊 Benchmark results available in benchmark-results.txt"
+            fi
+          else
+            echo "ℹ️ No benchmark tests found"
+          fi
+      
+      # Check binary size impact
+      - name: Check binary size
+        run: |
+          echo "📏 Checking binary size impact..."
+          
+          # Build current version
+          go build -ldflags="-w -s" -o current-binary ./cmd/server
+          CURRENT_SIZE=$(stat -c%s current-binary)
+          
+          # Try to build base version for comparison
+          git fetch origin ${{ github.base_ref }}
+          git checkout origin/${{ github.base_ref }} -- go.mod go.sum || true
+          
+          if go build -ldflags="-w -s" -o base-binary ./cmd/server 2>/dev/null; then
+            BASE_SIZE=$(stat -c%s base-binary)
+            SIZE_DIFF=$((CURRENT_SIZE - BASE_SIZE))
+            SIZE_DIFF_PERCENT=$(( (SIZE_DIFF * 100) / BASE_SIZE ))
+            
+            echo "📊 Binary size comparison:"
+            echo "  Base: $(numfmt --to=iec $BASE_SIZE)"
+            echo "  Current: $(numfmt --to=iec $CURRENT_SIZE)"
+            echo "  Difference: $(numfmt --to=iec $SIZE_DIFF) ($SIZE_DIFF_PERCENT%)"
+            
+            if [[ $SIZE_DIFF_PERCENT -gt 10 ]]; then
+              echo "⚠️ Binary size increased by more than 10%"
+            fi
+          else
+            echo "ℹ️ Could not build base version for comparison"
+            echo "Current binary size: $(numfmt --to=iec $CURRENT_SIZE)"
+          fi
+
+  # Job 5: Final PR status check
+  pr-check-summary:
+    name: PR Check Summary
+    runs-on: ubuntu-latest
+    needs: [pr-validation, code-analysis, dependency-check, performance-check]
+    if: always() && github.event.pull_request.draft == false
+    
+    steps:
+      - name: Generate PR summary
+        run: |
+          echo "📋 PR Check Summary"
+          echo "=================="
+          
+          echo "✅ Validation: ${{ needs.pr-validation.result }}"
+          echo "🔍 Code Analysis: ${{ needs.code-analysis.result }}"
+          echo "📦 Dependencies: ${{ needs.dependency-check.result }}"
+          echo "⚡ Performance: ${{ needs.performance-check.result }}"
+          
+          # Check if all required checks passed
+          if [[ "${{ needs.pr-validation.result }}" == "success" && \
+                "${{ needs.code-analysis.result }}" == "success" && \
+                "${{ needs.dependency-check.result }}" == "success" ]]; then
+            echo ""
+            echo "🎉 All PR checks passed! Ready for review."
+            exit 0
+          else
+            echo ""
+            echo "❌ Some PR checks failed. Please address the issues above."
+            exit 1
+          fi
+      
+      # Comment on PR with results (optional)
+      - name: Comment PR results
+        if: always()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const { owner, repo, number } = context.issue;
+            const validationResult = '${{ needs.pr-validation.result }}';
+            const codeAnalysisResult = '${{ needs.code-analysis.result }}';
+            const dependencyResult = '${{ needs.dependency-check.result }}';
+            const performanceResult = '${{ needs.performance-check.result }}';
+            
+            const statusEmoji = {
+              'success': '✅',
+              'failure': '❌',
+              'cancelled': '⏸️',
+              'skipped': '⏭️'
+            };
+            
+            const body = `## 🤖 PR Check Results
+            
+            | Check | Status | Result |
+            |-------|--------|--------|
+            | Validation | ${statusEmoji[validationResult]} | ${validationResult} |
+            | Code Analysis | ${statusEmoji[codeAnalysisResult]} | ${codeAnalysisResult} |
+            | Dependencies | ${statusEmoji[dependencyResult]} | ${dependencyResult} |
+            | Performance | ${statusEmoji[performanceResult]} | ${performanceResult} |
+            
+            ${validationResult === 'success' && codeAnalysisResult === 'success' && dependencyResult === 'success' ? 
+              '🎉 **All checks passed!** This PR is ready for review.' : 
+              '⚠️ **Some checks failed.** Please review the workflow results and address any issues.'}
+            
+            ---
+            _Automated check performed by GitHub Actions_`;
+            
+            github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: number,
+              body
+            });

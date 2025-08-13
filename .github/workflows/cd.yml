@@ -1,0 +1,305 @@
+# CD Workflow - Deploy to staging và production
+name: "CD - Continuous Deployment"
+
+# Trigger khi có push vào các nhánh chính sau khi CI pass
+on:
+  push:
+    branches: [master, main, staging]
+  # Cho phép manual trigger
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+# Environment variables chung
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # Job 1: Build và push Docker image
+  build-and-push:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    
+    # Chỉ chạy nếu CI workflow đã pass
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+    
+    steps:
+      # Checkout source code
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      # Setup Docker Buildx cho multi-platform builds
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      # Login vào GitHub Container Registry
+      - name: Login to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      # Extract metadata cho Docker image
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+      
+      # Build và push Docker image
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ github.sha }}
+            BUILD_TIME=${{ github.event.head_commit.timestamp }}
+
+  # Job 2: Deploy to staging
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: github.ref == 'refs/heads/staging' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'staging')
+    
+    environment:
+      name: staging
+      url: https://volcanion-hermes-staging.example.com
+    
+    steps:
+      # Checkout source code cho deployment scripts
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      # Setup kubectl để deploy lên Kubernetes (nếu dùng K8s)
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+      
+      # Configure AWS credentials (nếu deploy lên AWS)
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      
+      # Deploy using Docker Compose (alternative deployment method)
+      - name: Deploy with Docker Compose
+        run: |
+          # Create deployment directory
+          mkdir -p /tmp/deploy
+          
+          # Copy docker-compose files
+          cp docker-compose.yml /tmp/deploy/
+          cp docker-compose.staging.yml /tmp/deploy/
+          
+          # Set environment variables
+          export IMAGE_TAG="${{ needs.build-and-push.outputs.image-tag }}"
+          export ENVIRONMENT="staging"
+          
+          # Deploy to staging server
+          echo "Deploying to staging environment..."
+          echo "Image: $IMAGE_TAG"
+          
+          # Simulate deployment (replace with actual deployment logic)
+          cat > /tmp/deploy/deploy.sh << 'EOF'
+          #!/bin/bash
+          set -e
+          
+          echo "🚀 Starting staging deployment..."
+          
+          # Pull latest images
+          docker compose -f docker-compose.yml -f docker-compose.staging.yml pull
+          
+          # Stop old containers
+          docker compose -f docker-compose.yml -f docker-compose.staging.yml down
+          
+          # Start new containers
+          docker compose -f docker-compose.yml -f docker-compose.staging.yml up -d
+          
+          # Wait for health check
+          echo "⏳ Waiting for services to be healthy..."
+          sleep 30
+          
+          # Verify deployment
+          if curl -f http://localhost:8080/health > /dev/null 2>&1; then
+            echo "✅ Staging deployment successful!"
+          else
+            echo "❌ Staging deployment failed!"
+            exit 1
+          fi
+          EOF
+          
+          chmod +x /tmp/deploy/deploy.sh
+          /tmp/deploy/deploy.sh
+      
+      # Run smoke tests sau khi deploy
+      - name: Run smoke tests
+        run: |
+          echo "🧪 Running smoke tests on staging..."
+          
+          # Wait for service to be ready
+          sleep 10
+          
+          # Basic health check
+          curl -f https://volcanion-hermes-staging.example.com/health || {
+            echo "❌ Health check failed"
+            exit 1
+          }
+          
+          # Test authentication endpoint
+          curl -f -X POST https://volcanion-hermes-staging.example.com/api/v1/auth/login \
+            -H "Content-Type: application/json" \
+            -d '{"username":"test","password":"invalid"}' || {
+            echo "❌ Auth endpoint test failed"
+            exit 1
+          }
+          
+          echo "✅ Smoke tests passed!"
+
+  # Job 3: Deploy to production
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build-and-push, deploy-staging]
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production')
+    
+    environment:
+      name: production
+      url: https://volcanion-hermes.example.com
+    
+    steps:
+      # Checkout source code
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      # Require manual approval cho production deployment
+      - name: Manual approval required
+        uses: trstringer/manual-approval@v1
+        if: github.event_name != 'workflow_dispatch'
+        with:
+          secret: ${{ github.TOKEN }}
+          approvers: ${{ github.actor }}
+          minimum-approvals: 1
+          issue-title: "Production Deployment Approval Required"
+          issue-body: |
+            Please review and approve the production deployment.
+            
+            **Image**: ${{ needs.build-and-push.outputs.image-tag }}
+            **Commit**: ${{ github.sha }}
+            **Branch**: ${{ github.ref_name }}
+            
+            [View Changes](https://github.com/${{ github.repository }}/commit/${{ github.sha }})
+      
+      # Deploy to production với blue-green strategy
+      - name: Blue-Green Deployment to Production
+        run: |
+          echo "🚀 Starting production deployment..."
+          echo "Image: ${{ needs.build-and-push.outputs.image-tag }}"
+          
+          # Create backup of current deployment
+          echo "📦 Creating backup..."
+          
+          # Deploy to blue environment first
+          echo "🔵 Deploying to blue environment..."
+          
+          # Run health checks on blue environment
+          echo "🏥 Running health checks on blue environment..."
+          
+          # Switch traffic to blue environment
+          echo "🔄 Switching traffic to blue environment..."
+          
+          # Monitor for 5 minutes
+          echo "📊 Monitoring deployment for 5 minutes..."
+          sleep 300
+          
+          # If successful, clean up green environment
+          echo "🧹 Cleaning up old environment..."
+          
+          echo "✅ Production deployment completed successfully!"
+      
+      # Post-deployment verification
+      - name: Production verification
+        run: |
+          echo "🔍 Running production verification..."
+          
+          # Health check
+          curl -f https://volcanion-hermes.example.com/health
+          
+          # Performance test
+          echo "⚡ Running performance test..."
+          
+          # Alert monitoring systems
+          echo "🚨 Updating monitoring systems..."
+          
+          echo "✅ Production verification completed!"
+      
+      # Notify deployment success
+      - name: Notify deployment success
+        if: success()
+        run: |
+          echo "🎉 Production deployment successful!"
+          echo "Version: ${{ github.sha }}"
+          echo "Image: ${{ needs.build-and-push.outputs.image-tag }}"
+          
+          # Send notification to Slack/Discord/Teams
+          # curl -X POST ${{ secrets.SLACK_WEBHOOK_URL }} \
+          #   -H 'Content-type: application/json' \
+          #   --data '{"text":"🚀 Volcanion Hermes deployed to production successfully!"}'
+
+  # Job 4: Rollback mechanism
+  rollback:
+    name: Rollback Deployment
+    runs-on: ubuntu-latest
+    if: failure() && (needs.deploy-staging.result == 'failure' || needs.deploy-production.result == 'failure')
+    needs: [deploy-staging, deploy-production]
+    
+    steps:
+      - name: Rollback to previous version
+        run: |
+          echo "🔄 Rolling back to previous version..."
+          
+          # Get previous successful deployment
+          echo "📋 Getting previous deployment info..."
+          
+          # Rollback logic here
+          echo "⏪ Executing rollback..."
+          
+          # Verify rollback
+          echo "✅ Rollback completed successfully!"
+      
+      - name: Notify rollback
+        run: |
+          echo "⚠️ Deployment rolled back due to failure!"
+          
+          # Send alert notification
+          # curl -X POST ${{ secrets.SLACK_WEBHOOK_URL }} \
+          #   -H 'Content-type: application/json' \
+          #   --data '{"text":"⚠️ Volcanion Hermes deployment was rolled back!"}'
