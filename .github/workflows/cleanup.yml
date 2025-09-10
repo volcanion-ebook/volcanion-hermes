@@ -16,7 +16,7 @@ jobs:
     
     steps:
       - name: Delete old workflow runs
-        uses: actions/github-script@v6
+        uses: actions/github-script@v8
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -64,7 +64,7 @@ jobs:
     
     steps:
       - name: Delete old artifacts
-        uses: actions/github-script@v6
+        uses: actions/github-script@v8
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -103,7 +103,7 @@ jobs:
     
     steps:
       - name: Delete old releases
-        uses: actions/github-script@v6
+        uses: actions/github-script@v8
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -143,7 +143,7 @@ jobs:
     
     steps:
       - name: Delete old container images
-        uses: actions/github-script@v6
+        uses: actions/github-script@v8
         with:
           script: |
             const { owner, repo } = context.repo;
